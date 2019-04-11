@@ -25,6 +25,11 @@ print "there are %d locks currently held for <lock_name>"
 You can also use the Lock() class outside of a context manager (and this is required if you wish to 
 test the locks and not wait for them).
 
+When started the server drops the file lockserver.info that the client can use to find the ip address and 
+port of the server.  The client looks for this file in the current working directory as it's default manner
+of finding the server.  You can also specify the filename/path of the info file or just specify the host and 
+port when instantiating the Lock() class.
+
 ---
 
 The server is a single threaded select/poll socket server written only with core python libraries.  I specifically
@@ -40,8 +45,11 @@ lockservers before writing my own but all of the ones I found had very obvious r
 fix.  I then built it up for my specific environment but here it is after I've stripped most of that back out to be
 more general purpose.
 
-Things that it currently doesn't have but would be useful:
+Things that it currently doesn't have but would be useful on the server side
 
-* timeouts on locks
 * ability to set the port and bind address on the command line
+* ability to try multiple ports
 * deleting the lockserver.info file on quit.
+
+And on the client
+* timeouts on locks
