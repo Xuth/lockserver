@@ -174,7 +174,7 @@ class LockConnection(object):
         self.clientSocket = clientSocket
         self.address = address
         print("new client from %s on fd %s"%(address, self.fileno))
-        self.readBuf = ""
+        self.readBuf = b""
         self.locks = {}  # True if shared, False if exclusive
         self.waiting = False  # True if waiting for a lock
 
@@ -195,11 +195,12 @@ class LockConnection(object):
 
     def processReadBuf(self):
         # process read buffer for as long as we have complete commands and aren't waiting for a lock
-        while self.waiting is False:  
-            line, nl, rest = self.readBuf.partition('\n')
-            if nl != '\n':
+        while self.waiting is False:
+            line, nl, rest = self.readBuf.partition(b'\n')
+            if nl != b'\n':
                 return
             self.readBuf = rest
+            line = line.decode('ascii')
             line = line.strip()
             cmd, sp, lName = line.partition(' ')
             if sp != ' ':
@@ -218,9 +219,11 @@ class LockConnection(object):
 
             if cmd == "count":
                 if lName in LockDict:
-                    self.send("ACCESSCOUNT %s %d\n"%(lName, LockDict[lName].count()))
+                    count = LockDict[lName].count()
                 else:
-                    self.send("ACCESSCOUNT %s 0\n"%lName)
+                    count = 0
+                
+                self.send("ACCESSCOUNT %s %d\n"%(lName, count))
                 continue
 
             # all other commands require an lName that isn't already in locks
@@ -266,7 +269,7 @@ class LockConnection(object):
 
         this will fail on unicode strings
         """
-        if len(data) != self.clientSocket.send(data):
+        if len(data) != self.clientSocket.send(bytes(data, 'ascii')):
             self.killClient()
 
     def killClient(self):
@@ -427,29 +430,31 @@ class LockClient(object):
     def getLock(self, cmd, lName):
         "issue any of the lock commands, responses are same"
         req = cmd + " " + lName + "\n"
-        self.sock.send(req)
-        s = ""
-        while "\n" not in s:
-            s += self.sock.recv(select.PIPE_BUF)
+        self.sock.send(bytes(req, 'ascii'))
+        s = b''
 
-        assert s.endswith('\n'), "invalid strings coming from lock server"
+        while b'\n' not in s:
+            s += self.sock.recv(select.PIPE_BUF)
+        assert s.endswith(b'\n'), "invalid strings coming from lock server"
+
         s = s.rstrip()
-        result, sp, msg = s.partition(' ')
-        if result == "ACQUIRED":
+        result, sp, msg = s.partition(b' ')
+        if result == b"ACQUIRED":
             return True
-        if result == "FAILED":
+        if result == b"FAILED":
             return False
         # anything else is an error
         raise RuntimeError("invalid respone from lockserver")
 
     def releaseLock(self, lName):
         req = "release %s\n"%lName
-        self.sock.send(req)
-        s = ""
-        while "\n" not in s:
+        self.sock.send(bytes(req, 'ascii'))
+        s = b""
+        while b"\n" not in s:
             s += self.sock.recv(select.PIPE_BUF)
 
-        assert s.endswith('\n'), "invalid strings coming from lock server"
+        assert s.endswith(b'\n'), "invalid strings coming from lock server"
+        s = s.decode('ascii')
         s = s.rstrip()
         result, sp, msg = s.partition(' ')
 
@@ -458,12 +463,13 @@ class LockClient(object):
 
     def getAccessCount(self, lName):
         req = "count %s\n"%lName
-        self.sock.send(req)
-        s = ""
-        while "\n" not in s:
+        self.sock.send(bytes(req, 'ascii'))
+        s = b""
+        while b"\n" not in s:
             s += self.sock.recv(select.PIPE_BUF)
 
-        assert s.endswith('\n'), "invalid strings coming from lock server"
+        assert s.endswith(b'\n'), "invalid strings coming from lock server"
+        s = s.decode('ascii')
         s = s.rstrip()
 
         result, name, count = s.split(' ', 2)
@@ -511,7 +517,7 @@ class Lock(object):
         self.release()
 
     def lock(self):
-        for i in xrange(2):
+        for i in range(2):
             try:
                 self.lockClient = getLockConnection(self.discoverServer, self.host, self.port, self.lockClient)
                 cmd = Lock.cmdDict[(self.shared, self.wait)]
@@ -533,7 +539,7 @@ class SharedLock(Lock):
 
 def lockAccessCount(lockName, discoverServer=True,
                  host=None, port=None, lockClient=None):
-    for i in xrange(2):
+    for i in range(2):
         try:
             lockClient = getLockConnection(discoverServer, host, port, lockClient)
             return lockClient.getAccessCount(lockName)
@@ -555,7 +561,7 @@ def getLockConnection(discoverServer=True, host=None, port=None, lockClient=None
     if DefaultLockClient is not None:
         return DefaultLockClient
     
-    for i in xrange(30):
+    for i in range(30):
         try:
             if discoverServer is False:
                 DefaultLockClient = LockClient(self.host, self.port)
