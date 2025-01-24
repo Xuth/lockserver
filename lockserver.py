@@ -95,6 +95,7 @@ def getIp():
 ################################################################
 
 class ServerLock(object):
+    "A ServerLock object exists for each lock on the server and handles all of the lock accounting"
     def __init__(self, lName):
         LockDict[lName] = self
         self.lName = lName
@@ -167,7 +168,33 @@ class ServerLock(object):
         return self.accessCount
 
 
+class ServerMsg(object):
+    "a ServerMsg object exists for each message stored on the lock server"
+    def __init__(self, mName):
+        MsgDict[mName] = self
+        self.mName = mName
+        self.text = None
+        self.owner = None
+
+    def set(self, msg, owner):
+        self.text = msg
+        self.owner = owner
+
+    def get(self):
+        if self.text is None:
+            del(MsgDict[self.mName])
+            raise(Exception())
+        return self.text
+
+    def release(self, owner):
+        if owner != self.owner: # presumably someone else overwrote the message
+            return        
+        del(MsgDict[self.mName])
+
+
+
 class LockConnection(object):
+    "a LockConnection object exists for each client that connects to the lock server"
     def __init__(self, clientSocket, address):
         self.fileno = clientSocket.fileno()
         ClientDict[self.fileno] = self
@@ -176,6 +203,7 @@ class LockConnection(object):
         print("new client from %s on fd %s"%(address, self.fileno))
         self.readBuf = b""
         self.locks = {}  # True if shared, False if exclusive
+        self.msgs = set()
         self.waiting = False  # True if waiting for a lock
 
         self.clientSocket.setblocking(0)
@@ -226,6 +254,32 @@ class LockConnection(object):
                 self.send("ACCESSCOUNT %s %d\n"%(lName, count))
                 continue
 
+            if cmd == "set":
+                mName, sp, text = lName.partition(' ')
+                if sp != ' ':
+                    self.killClient()
+                    return
+
+                MsgDict[mName].set(text, self)
+                self.msgs.add(mName)
+                # no response, just continue on
+                continue
+
+            if cmd == "get":
+                try:
+                    text = MsgDict[lName].get()
+                    self.send(f"MSG {lName} {text}\n")
+                except:
+                    self.send("NOMSG\n")
+                continue
+                    
+            if cmd == "relmsg":
+                try:
+                    self.msgs.remove(lName)
+                    MsgDict[lName].release(self)
+                except:
+                    pass
+
             # all other commands require an lName that isn't already in locks
             if lName in self.locks:
                 self.send("ERROR %s already locked\n"%lName)
@@ -275,6 +329,9 @@ class LockConnection(object):
     def killClient(self):
         for lName,share in self.locks.items():
             LockDict[lName].release()
+
+        for mName in self.msgs:
+            MsgDict[mName].release(self)
 
         if self.waiting:
             LockDict[self.waitName].clearWaiting(self, self.waitShared)
@@ -332,6 +389,7 @@ class LockServer(object):
         
 
 LockDict = DefaultDict(lambda dd,key: ServerLock(key)) # key is name of lock, val is ServerLock
+MsgDict = DefaultDict(lambda dd,key: ServerMsg(key)) # key is name of the message, val is ServerMsg
 ClientDict = {} # key is fileno of clientsocket, val is LockConnection
 
 ################################################################
@@ -477,6 +535,31 @@ class LockClient(object):
         assert name == lName, "lock name in access count invalid"
         assert count[0].isdigit(), "lock count is not a number" #not a complete check but I'm probably already excessive
         return int(count)
+
+    def setMsg(self, mName, msg):
+        req = f"set {mName} {msg}\n"
+        self.sock.send(bytes(req, 'ascii'))
+        # don't wait for a response, as there will be none
+
+    def getMsg(self, mName):
+        req = f"get {mName}\n"
+        self.sock.send(bytes(req, 'ascii'))
+
+        s = b""
+        while b"\n" not in s:
+            s += self.sock.recv(select.PIPE_BUF)
+
+        assert s.endswith(b'\n'), "invalid strings coming from lock server"
+        s = s.decode('ascii')
+        s = s.rstrip()
+
+        if s == "NOMSG":
+            return False
+
+        result, name, msg = s.split(' ', 2)
+        assert result=="MSG", "invalid response to get message"
+        assert name == mName, "message name in get message invalid"
+        return msg
     
     def close(self):
         try:
@@ -535,6 +618,31 @@ class SharedLock(Lock):
     def __init__(self, *args, **kwargs):
         kwargs['shared']=True
         super(SharedLock, self).__init__(*args, **kwargs)
+
+def setMsg(mName, msg, discoverServer=True, host=None, port=None, lockClient=None):
+    "sets a server message"
+    for i in range(2):
+        try:
+            lc = getLockConnection(discoverServer, host, port, lockClient)
+            lc.setMsg(mName, msg)
+            return
+        except:
+            pass
+
+    raise RuntimeError("Can't reach lockserver")
+    
+
+def getMsg(mName, discoverServer=True, host=None, port=None, lockClient=None):
+    "returns the message text if message exists on the server or otherwise returns False"
+    for i in range(2):
+        try:
+            lc = getLockConnection(discoverServer, host, port, lockClient)
+            msg = lc.getMsg(mName)
+            return msg
+        except:
+            pass
+
+    raise RuntimeError("Can't reach lockserver")
 
 
 def lockAccessCount(lockName, discoverServer=True,
